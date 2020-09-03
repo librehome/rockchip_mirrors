@@ -24,7 +24,7 @@
 #include "mpp_mem.h"
 #include "mpp_info.h"
 #include "mpp_common.h"
-
+#include "mpp_time.h"
 #include "mpp_packet_impl.h"
 
 #include "mpp.h"
@@ -168,12 +168,19 @@ typedef union EncTaskStatus_u {
     };
 } EncTaskStatus;
 
+typedef struct EncFpsInfo_t {
+    RK_S32          cnt;
+    RK_S32          rate;
+    MppMutexCond    cnd;
+} EncFpsInfo;
+
 typedef struct EncTask_t {
     RK_S32          seq_idx;
     EncTaskStatus   status;
     EncTaskWait     wait;
     EncFrmStatus    frm;
     HalTaskInfo     info;
+    EncFpsInfo      fps_info;
 } EncTask;
 
 static RK_U8 uuid_version[16] = {
@@ -1004,6 +1011,19 @@ TASK_DONE:
     return ret;
 }
 
+static void *enc_fps_calc_thread(void *data)
+{
+    if (data) {
+        EncFpsInfo *info = (EncFpsInfo *)data;
+        AutoMutex autolock(info->cnd.mutex());
+
+        info->rate = info->cnt;
+        info->cnt = 0;
+    }
+
+    return NULL;
+}
+
 void *mpp_enc_thread(void *data)
 {
     Mpp *mpp = (Mpp*)data;
@@ -1027,8 +1047,13 @@ void *mpp_enc_thread(void *data)
     MPP_RET ret = MPP_OK;
     MppFrame frame = NULL;
     MppPacket packet = NULL;
+    MppTimer enc_timer = mpp_timer_get("enc_fps_calc");
 
     memset(&task, 0, sizeof(task));
+    if (enc_timer) {
+        mpp_timer_set_callback(enc_timer, enc_fps_calc_thread, &task.fps_info);
+        mpp_timer_set_timing(enc_timer, 1000, 1000); // 1 second
+    }
 
     while (1) {
         {
@@ -1223,7 +1248,13 @@ void *mpp_enc_thread(void *data)
 
         // start encoder task process here
         hal_task->valid = 1;
+        /* enable timer to calculate fps */
+        mpp_timer_set_enable(enc_timer, 1);
+        {
+            AutoMutex autolock(task.fps_info.cnd.mutex());
 
+            hal_task->frame_rate = task.fps_info.rate;
+        }
         // 12. generate header before hardware stream
         if (!hdr_status->ready) {
             /* config cpb before generating header */
@@ -1290,6 +1321,14 @@ void *mpp_enc_thread(void *data)
         frm->reencode_times = 0;
         frm_cfg->force_flag = 0;
 
+        /* calc fps */
+        {
+            AutoMutex autolock(task.fps_info.cnd.mutex());
+
+            task.fps_info.cnt++;
+            hal_task->frame_rate = task.fps_info.rate;
+            enc_dbg_detail("frame_rate=%d\n", hal_task->frame_rate);
+        }
     TASK_DONE:
         /* setup output packet and meta data */
         mpp_packet_set_length(packet, hal_task->length);
@@ -1335,6 +1374,11 @@ void *mpp_enc_thread(void *data)
         task.status.val = 0;
         /* NOTE: clear add_by flags */
         hdr_status->val = hdr_status->ready;
+    }
+    // clear frame rate calc timer
+    if (enc_timer) {
+        mpp_timer_set_enable(enc_timer, 0);
+        mpp_timer_put(enc_timer);
     }
 
     // clear remain task in output port

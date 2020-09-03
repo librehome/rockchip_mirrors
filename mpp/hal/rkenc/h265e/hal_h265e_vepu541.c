@@ -26,6 +26,7 @@
 #include "mpp_device.h"
 #include "mpp_device_msg.h"
 #include "mpp_frame_impl.h"
+#include "mpp_codec_info.h"
 
 #include "h265e_syntax_new.h"
 #include "hal_h265e_api.h"
@@ -98,6 +99,8 @@ typedef struct H265eV541HalContext_t {
     RK_S32              buf_size;
     RK_U32              frame_num;
     HalBufs             dpb_bufs;
+    // codec info
+    RkvCodecInfo        enc_info;
 } H265eV541HalContext;
 
 
@@ -412,6 +415,10 @@ MPP_RET hal_h265e_v541_init(void *hal, MppEncHalCfg *cfg)
     ctx->osd_cfg.osd_data = NULL;
 
     ctx->frame_type = INTRA_FRAME;
+
+    /* init enc info */
+    memset(&ctx->enc_info, 0, sizeof(ctx->enc_info));
+
     h265e_hal_leave();
     return ret;
 }
@@ -917,6 +924,54 @@ static void vepu541_h265_set_me_regs(H265eV541HalContext *ctx, H265eSyntax_new *
         regs->me_ram.cach_l2_tag  = 0x3;
 }
 
+#define H265_PROFILE_MAIN       1
+#define H265_PROFILE_MAIN_10    2
+static MPP_RET
+vepu541_h265_set_enc_infos(H265eV541HalContext *ctx, HalEncTask *task)
+{
+    RkvCodecInfo *info = &ctx->enc_info;
+    MppEncRcCfg *rc = &ctx->cfg->rc;
+    MppEncPrepCfg *prep = &ctx->cfg->prep;
+    MppEncCodecCfg *codec = &ctx->cfg->codec;
+    RK_U64 m_data = 0;
+
+    info->cnt = 0;
+    mpp_set_codec_info_elem(info, RKVE_INFO_WIDTH, RKVE_INFO_FLAG_NUMBER, prep->width);
+    mpp_set_codec_info_elem(info, RKVE_INFO_HEIGHT, RKVE_INFO_FLAG_NUMBER, prep->height);
+
+    {
+        m_data = 0;
+        strncpy((char *)&m_data, (const char *)"HEVC", sizeof(m_data));
+        mpp_set_codec_info_elem(info, RKVE_INFO_FORMAT, RKVE_INFO_FLAG_STRING, m_data); // 0: 264, 1:265
+    }
+    mpp_set_codec_info_elem(info, RKVE_INFO_FPS_IN, RKVE_INFO_FLAG_NUMBER,
+                            rc->fps_in_num / rc->fps_in_denorm);
+    mpp_set_codec_info_elem(info, RKVE_INFO_FPS_OUT, RKVE_INFO_FLAG_NUMBER,
+                            rc->fps_out_num / rc->fps_out_denorm);
+    {
+        m_data = 0;
+        mpp_get_rc_mode_codec_info_data(rc->rc_mode, &m_data);
+        mpp_set_codec_info_elem(info, RKVE_INFO_RC_MODE, RKVE_INFO_FLAG_STRING, m_data);
+    }
+    mpp_set_codec_info_elem(info, RKVE_INFO_BITRATE, RKVE_INFO_FLAG_NUMBER, rc->bps_target);
+
+    mpp_set_codec_info_elem(info, RKVE_INFO_GOP_SIZE, RKVE_INFO_FLAG_NUMBER, rc->gop);
+    mpp_set_codec_info_elem(info, RKVE_INFO_FPS_CALC, RKVE_INFO_FLAG_NUMBER, task->frame_rate);
+    {
+        m_data = 0;
+        if (codec->h265.profile == H265_PROFILE_MAIN)
+            strncpy((char *)&m_data, (const char *)"MAIN", sizeof(m_data));
+        else if (codec->h264.profile == H265_PROFILE_MAIN_10)
+            strncpy((char *)&m_data, (const char *)"MAIN10", sizeof(m_data));
+        else
+            strncpy((char *)&m_data, (const char *)"null", sizeof(m_data));
+        mpp_set_codec_info_elem(info, RKVE_INFO_PROFILE, RKVE_INFO_FLAG_STRING, m_data);
+    }
+    (void)task;
+
+    return MPP_OK;
+}
+
 MPP_RET hal_h265e_v541_gen_regs(void *hal, HalEncTask *task)
 {
     H265eV541HalContext *ctx = (H265eV541HalContext *)hal;
@@ -1107,6 +1162,8 @@ MPP_RET hal_h265e_v541_gen_regs(void *hal, HalEncTask *task)
     vepu541_set_osd(&ctx->osd_cfg);
     /* ROI configure */
     vepu541_h265_set_roi_regs(ctx, regs);
+    /* codec info for kernel */
+    vepu541_h265_set_enc_infos(ctx, task);
 
     memcpy(&hal_cfg[ctx->frame_cnt_gen_ready], &task->rc_task->info, sizeof(EncRcTaskInfo));
 
@@ -1213,6 +1270,17 @@ MPP_RET hal_h265e_v541_start(void *hal, HalEncTask *task)
     if (ret)
         ret = MPP_ERR_VPUHW;
 #endif
+    if (ctx->enc_info.cnt > 0) {
+        MppDevReqV1 req;
+
+        memset(&req, 0, sizeof(req));
+        req.flag = 0;
+        req.cmd = MPP_CMD_SEND_CODEC_INFO;
+        req.size = ctx->enc_info.cnt * sizeof(ctx->enc_info.elem_set[0]);
+        req.data = ctx->enc_info.elem_set;
+
+        mpp_device_send_single_request(ctx->dev_ctx, &req);
+    }
 
     h265e_hal_leave();
     return ret;

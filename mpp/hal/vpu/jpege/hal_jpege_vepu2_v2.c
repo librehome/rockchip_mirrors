@@ -26,7 +26,7 @@
 #include "mpp_platform.h"
 
 #include "mpp_enc_hal.h"
-
+#include "mpp_device_msg.h"
 #include "vepu_common.h"
 
 #include "hal_jpege_debug.h"
@@ -80,6 +80,8 @@ MPP_RET hal_jpege_vepu2_init_v2(void *hal, MppEncHalCfg *cfg)
         mpp_err_f("failed to malloc vdpu2 regs\n");
         return MPP_NOK;
     }
+    /* init enc info */
+    memset(&ctx->enc_info, 0, sizeof(ctx->enc_info));
 
     hal_jpege_dbg_func("leave hal %p\n", hal);
     return MPP_OK;
@@ -229,6 +231,44 @@ static MPP_RET hal_jpege_vepu2_rc(HalJpegeCtx *ctx, HalEncTask *task)
     return MPP_OK;
 }
 
+static MPP_RET
+vepu2_jpege_set_enc_infos(HalJpegeCtx *ctx, HalEncTask *task)
+{
+    RkvCodecInfo *info = &ctx->enc_info;
+    MppEncRcCfg *rc = &ctx->cfg->rc;
+    MppEncPrepCfg *prep = &ctx->cfg->prep;
+    RK_U64 m_data = 0;
+
+    info->cnt = 0;
+    mpp_set_codec_info_elem(info, RKVE_INFO_WIDTH, RKVE_INFO_FLAG_NUMBER, prep->width);
+    mpp_set_codec_info_elem(info, RKVE_INFO_HEIGHT, RKVE_INFO_FLAG_NUMBER, prep->height);
+
+    {
+        m_data = 0;
+        strncpy((char *)&m_data, (const char *)"JPEG", sizeof(m_data));
+        mpp_set_codec_info_elem(info, RKVE_INFO_FORMAT, RKVE_INFO_FLAG_STRING, m_data);// 1: vp8, 2:jpege 3:h264
+    }
+    mpp_set_codec_info_elem(info, RKVE_INFO_FPS_IN, RKVE_INFO_FLAG_NUMBER,
+                            rc->fps_in_num / rc->fps_in_denorm);
+    mpp_set_codec_info_elem(info, RKVE_INFO_FPS_OUT, RKVE_INFO_FLAG_NUMBER,
+                            rc->fps_out_num / rc->fps_out_denorm);
+    {
+        m_data = 0;
+        mpp_get_rc_mode_codec_info_data(rc->rc_mode, &m_data);
+        mpp_set_codec_info_elem(info, RKVE_INFO_RC_MODE, RKVE_INFO_FLAG_STRING, m_data);
+    }
+    mpp_set_codec_info_elem(info, RKVE_INFO_BITRATE, RKVE_INFO_FLAG_NUMBER, rc->bps_target);
+    mpp_set_codec_info_elem(info, RKVE_INFO_GOP_SIZE, RKVE_INFO_FLAG_NUMBER, rc->gop);
+    mpp_set_codec_info_elem(info, RKVE_INFO_FPS_CALC, RKVE_INFO_FLAG_NUMBER, task->frame_rate);
+    {
+        m_data = 0;
+        strncpy((char *)&m_data, (const char *)"BASE", sizeof(m_data));
+        mpp_set_codec_info_elem(info, RKVE_INFO_PROFILE, RKVE_INFO_FLAG_STRING, m_data);
+    }
+    (void)task;
+
+    return MPP_OK;
+}
 
 MPP_RET hal_jpege_vepu2_gen_regs_v2(void *hal, HalEncTask *task)
 {
@@ -428,6 +468,8 @@ MPP_RET hal_jpege_vepu2_gen_regs_v2(void *hal, HalEncTask *task)
                            qtable[1][qp_reorder_table[i * 4 + 3]];
         }
     }
+    /* codec info for kernel */
+    vepu2_jpege_set_enc_infos(ctx, task);
 
     hal_jpege_dbg_func("leave hal %p\n", hal);
     return MPP_OK;
@@ -452,6 +494,18 @@ MPP_RET hal_jpege_vepu2_start_v2(void *hal, HalEncTask *task)
         if (ret)
             return MPP_ERR_VPUHW;
         ret = mpp_device_send_reg(ctx->dev_ctx, ctx->ioctl_info.regs, nregs);
+
+        if (ctx->enc_info.cnt > 0) {
+            MppDevReqV1 req;
+
+            memset(&req, 0, sizeof(req));
+            req.flag = 0;
+            req.cmd = MPP_CMD_SEND_CODEC_INFO;
+            req.size = ctx->enc_info.cnt * sizeof(ctx->enc_info.elem_set[0]);
+            req.data = ctx->enc_info.elem_set;
+
+            mpp_device_send_single_request(ctx->dev_ctx, &req);
+        }
     } else {
         RK_U32 *cache = NULL;
         if (mpp_device_patch_is_valid(info)) {

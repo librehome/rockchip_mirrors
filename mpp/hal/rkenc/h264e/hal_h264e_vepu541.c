@@ -27,6 +27,7 @@
 #include "mpp_device_patch.h"
 #include "mpp_frame_impl.h"
 #include "mpp_rc.h"
+#include "mpp_codec_info.h"
 
 #include "hal_h264e_debug.h"
 #include "h264e_sps.h"
@@ -81,6 +82,8 @@ typedef struct HalH264eVepu541Ctx_t {
     Vepu541H264eRegSet      regs_set;
     Vepu541H264eRegL2Set    regs_l2_set;
     Vepu541H264eRegRet      regs_ret;
+    /* enc info */
+    RkvCodecInfo            enc_info;
 } HalH264eVepu541Ctx;
 
 static RK_U32 h264e_klut_weight_i[24] = {
@@ -166,6 +169,7 @@ static MPP_RET hal_h264e_vepu541_init(void *hal, MppEncHalCfg *cfg)
     p->osd_cfg.dev = p->dev_ctx;
     p->osd_cfg.plt_cfg = &p->cfg->plt_cfg;
     p->osd_cfg.osd_data = NULL;
+    memset(&p->enc_info, 0, sizeof(p->enc_info));
 
 DONE:
     if (ret)
@@ -1293,6 +1297,61 @@ static void setup_vepu541_l2(Vepu541H264eRegL2Set *regs, H264eSlice *slice)
     hal_h264e_dbg_func("leave\n");
 }
 
+const char *enc_rc_mode_name[] = {
+    [0] = "VBR",
+    [1] = "CBR",
+    [2] = "FIXQP",
+};
+
+
+static MPP_RET
+vepu541_h264_set_enc_infos(HalH264eVepu541Ctx *ctx, HalEncTask *task)
+{
+    RkvCodecInfo *info = &ctx->enc_info;
+    MppEncRcCfg *rc = &ctx->cfg->rc;
+    MppEncPrepCfg *prep = &ctx->cfg->prep;
+    MppEncCodecCfg *codec = &ctx->cfg->codec;
+    RK_U64 m_data = 0;
+
+    info->cnt = 0;
+
+    mpp_set_codec_info_elem(info, RKVE_INFO_WIDTH, RKVE_INFO_FLAG_NUMBER, prep->width);
+    mpp_set_codec_info_elem(info, RKVE_INFO_HEIGHT, RKVE_INFO_FLAG_NUMBER, prep->height);
+    {
+        m_data = 0;
+        strncpy((char *)&m_data, (const char *)"AVC", sizeof(m_data));
+        mpp_set_codec_info_elem(info, RKVE_INFO_FORMAT, RKVE_INFO_FLAG_STRING, m_data); // 0: 264, 1:265
+    }
+    mpp_set_codec_info_elem(info, RKVE_INFO_FPS_IN, RKVE_INFO_FLAG_NUMBER,
+                            rc->fps_in_num / rc->fps_in_denorm);
+    mpp_set_codec_info_elem(info, RKVE_INFO_FPS_OUT, RKVE_INFO_FLAG_NUMBER,
+                            rc->fps_out_num / rc->fps_out_denorm);
+    {
+        m_data = 0;
+        mpp_get_rc_mode_codec_info_data(rc->rc_mode, &m_data);
+        mpp_set_codec_info_elem(info, RKVE_INFO_RC_MODE, RKVE_INFO_FLAG_STRING, m_data);
+    }
+    mpp_set_codec_info_elem(info, RKVE_INFO_BITRATE, RKVE_INFO_FLAG_NUMBER, rc->bps_target);
+    mpp_set_codec_info_elem(info, RKVE_INFO_GOP_SIZE, RKVE_INFO_FLAG_NUMBER, rc->gop);
+    mpp_set_codec_info_elem(info, RKVE_INFO_FPS_CALC, RKVE_INFO_FLAG_NUMBER, task->frame_rate);
+    {
+        m_data = 0;
+        if (codec->h264.profile == H264_PROFILE_BASELINE)
+            strncpy((char *)&m_data, (const char *)"BASE", sizeof(m_data));
+        else if (codec->h264.profile == H264_PROFILE_MAIN)
+            strncpy((char *)&m_data, (const char *)"MAIN", sizeof(m_data));
+        else if (codec->h264.profile == H264_PROFILE_HIGH)
+            strncpy((char *)&m_data, (const char *)"HIGH", sizeof(m_data));
+        else
+            strncpy((char *)&m_data, (const char *)"null", sizeof(m_data));
+
+        mpp_set_codec_info_elem(info, RKVE_INFO_PROFILE, RKVE_INFO_FLAG_STRING, m_data);
+    }
+    (void)task;
+
+    return MPP_OK;
+}
+
 static MPP_RET hal_h264e_vepu541_gen_regs(void *hal, HalEncTask *task)
 {
     HalH264eVepu541Ctx *ctx = (HalH264eVepu541Ctx *)hal;
@@ -1328,6 +1387,8 @@ static MPP_RET hal_h264e_vepu541_gen_regs(void *hal, HalEncTask *task)
     setup_vepu541_l2(&ctx->regs_l2_set, slice);
 
     mpp_device_send_extra_info(ctx->dev_ctx, &ctx->dev_patch);
+    /* codec info for kernel */
+    vepu541_h264_set_enc_infos(ctx, task);
 
     mpp_env_get_u32("dump_l1_reg", &dump_l1_reg, 0);
 
@@ -1398,6 +1459,16 @@ static MPP_RET hal_h264e_vepu541_start(void *hal, HalEncTask *task)
     ret = mpp_device_send_request(ctx->dev_ctx);
     if (ret)
         ret = MPP_ERR_VPUHW;
+
+    /* enc info */
+    if (ctx->enc_info.cnt > 0) {
+        memset(&req, 0, sizeof(req));
+        req.flag = 0;
+        req.cmd = MPP_CMD_SEND_CODEC_INFO;
+        req.size = ctx->enc_info.cnt * sizeof(ctx->enc_info.elem_set[0]);
+        req.data = ctx->enc_info.elem_set;
+        mpp_device_send_single_request(ctx->dev_ctx, &req);
+    }
 
     hal_h264e_dbg_func("leave %p\n", hal);
 

@@ -16,6 +16,7 @@
 
 #define  MODULE_TAG "mpp_hal"
 
+#include <string.h>
 #include "mpp_mem.h"
 #include "mpp_log.h"
 #include "mpp_common.h"
@@ -23,6 +24,7 @@
 #include "mpp.h"
 #include "mpp_hal.h"
 #include "mpp_frame_impl.h"
+#include "mpp_codec_info.h"
 
 #include "hal_h263d_api.h"
 #include "hal_h264d_api.h"
@@ -229,3 +231,39 @@ MPP_RET mpp_hal_control(MppHal ctx, MpiCmd cmd, void *param)
     return p->api->control(p->ctx, cmd, param);
 }
 
+MPP_RET mpp_set_codec_info_elem(RkvCodecInfo *info, RK_U32 type, RK_U32 flag, RK_U64 data)
+{
+    if (type > RKVE_INFO_BASE && type < RKVE_INFO_BUTT) {
+        RkvCodecInfoElem *elem = &info->elem_last[type];
+
+        if (elem->type != type || elem->flag != flag || elem->data != data) {
+            /* set enc info */
+            info->elem_set[info->cnt].type = type;
+            info->elem_set[info->cnt].flag = flag;
+            info->elem_set[info->cnt].data = data;
+            info->cnt++;
+            /* recoder enc info */
+            elem->type = type;
+            elem->flag = flag;
+            elem->data = data;
+        }
+    }
+
+    return MPP_OK;
+}
+
+MPP_RET mpp_get_rc_mode_codec_info_data(RK_S32 rc_mode, RK_U64 *data)
+{
+    if (rc_mode == MPP_ENC_RC_MODE_VBR)
+        strncpy((char *)data, (const char *)"VBR", sizeof(*data));
+    else if (rc_mode == MPP_ENC_RC_MODE_CBR)
+        strncpy((char *)data, (const char *)"CBR", sizeof(*data));
+    else if (rc_mode == MPP_ENC_RC_MODE_FIXQP)
+        strncpy((char *)data, (const char *)"FIXQP", sizeof(*data));
+    else if (rc_mode == MPP_ENC_RC_MODE_AVBR)
+        strncpy((char *)data, (const char *)"AVBR", sizeof(*data));
+    else
+        strncpy((char *)data, (const char *)"null", sizeof(*data));
+
+    return MPP_OK;
+}

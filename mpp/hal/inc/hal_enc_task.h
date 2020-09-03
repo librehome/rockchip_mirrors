@@ -80,6 +80,8 @@ typedef struct HalEncTask_t {
     RK_S32          temporal_id;
 
     HalEncTaskFlag  flags;
+    // calc frame rate
+    RK_U32          frame_rate;
 } HalEncTask;
 
 #endif /* __HAL_ENC_TASK__ */

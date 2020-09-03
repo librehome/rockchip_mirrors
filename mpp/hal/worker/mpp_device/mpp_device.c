@@ -127,8 +127,14 @@ static RK_U32 mpp_device_debug = 0;
 static MPP_RET mpp_probe_cmd_butt(RK_S32 dev, MppDevCtxImpl *p)
 {
     MPP_RET ret = MPP_OK;
+    static RK_U32 probe_support_cmd = 0;
 
-    p->support_cmd_butt = access("/proc/mpp_service/support_cmd", F_OK) ? 0 : 1;
+    if (probe_support_cmd) {
+        p->support_cmd_butt = probe_support_cmd;
+        return MPP_OK;
+    }
+
+    p->support_cmd_butt = probe_support_cmd = access("/proc/mpp_service/support_cmd", F_OK) ? 0 : 1;
     if (p->support_cmd_butt) {
         MppReqV1 mpp_req;
 

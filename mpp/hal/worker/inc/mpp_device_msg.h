@@ -32,6 +32,7 @@ extern "C" {
 
 MPP_RET mpp_device_add_request(MppDevCtx ctx, MppDevReqV1 *req);
 MPP_RET mpp_device_send_request(MppDevCtx ctx);
+MPP_RET mpp_device_send_single_request(MppDevCtx ctx, MppDevReqV1 *req);
 
 #ifdef __cplusplus
 }

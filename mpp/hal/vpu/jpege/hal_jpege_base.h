@@ -19,6 +19,7 @@
 
 #include "mpp_device.h"
 #include "mpp_hal.h"
+#include "mpp_codec_info.h"
 #include "jpege_syntax.h"
 
 typedef struct JpegeIocRegInfo_t {
@@ -47,6 +48,8 @@ typedef struct hal_jpege_ctx_s {
 
     HalJpegeRc          hal_rc;
     RK_S32              hal_start_pos;
+    // codec info
+    RkvCodecInfo        enc_info;
 } HalJpegeCtx;
 
 #endif /* __HAL_JPEGE_BASE_H__ */
